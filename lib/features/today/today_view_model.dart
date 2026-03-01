@@ -3,6 +3,30 @@ import 'package:flutter/foundation.dart';
 import 'data/today_storage.dart';
 import 'models/day_models.dart';
 
+class QuickAddAction {
+  const QuickAddAction({
+    required this.label,
+    required this.domain,
+    required this.minutes,
+  });
+
+  final String label;
+  final DayDomain domain;
+  final int minutes;
+}
+
+class SourceStatus {
+  const SourceStatus({
+    required this.name,
+    required this.state,
+    required this.detail,
+  });
+
+  final String name;
+  final String state;
+  final String detail;
+}
+
 class TodayViewModel extends ChangeNotifier {
   TodayViewModel._(this._storage);
 
@@ -12,8 +36,12 @@ class TodayViewModel extends ChangeNotifier {
 
   bool isInitializing = true;
   bool isSaving = false;
+  bool isAddingEvent = false;
+  bool isAddingNote = false;
   bool isSaved = false;
   double rating = 7;
+  String? lastEventMessage;
+  String? lastNoteMessage;
 
   DayRecord? _today;
 
@@ -79,25 +107,131 @@ class TodayViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> addQuickEvent(DayDomain domain, int minutes) async {
-    if (_today == null || minutes <= 0) {
+  Future<void> addQuickAssessment({double? withRating}) async {
+    if (_today == null || isSaving) {
       return;
     }
 
-    final DateTime endAt = DateTime.now();
-    final DateTime startAt = endAt.subtract(Duration(minutes: minutes));
-    final DayEvent event = DayEvent(
-      id: '${domain.name}-${endAt.microsecondsSinceEpoch}',
-      domain: domain,
-      startAt: startAt,
-      endAt: endAt,
+    final double assessmentRating = withRating?.clamp(1, 10).toDouble() ?? rating;
+    final DayCheckIn checkIn = DayCheckIn(
+      at: DateTime.now(),
+      rating: assessmentRating,
     );
-    final List<DayEvent> updatedEvents = List<DayEvent>.from(_today!.events)
-      ..add(event);
-    _today = _today!.copyWith(events: updatedEvents);
+    final List<DayCheckIn> updatedCheckIns = List<DayCheckIn>.from(
+      _today!.checkIns,
+    )..add(checkIn);
+
+    _today = _today!.copyWith(checkIns: updatedCheckIns);
     _upsertToday(_today!);
     await _storage.saveRecords(_records);
     notifyListeners();
+  }
+
+  double get pulseScore {
+    if (_today == null || _today!.checkIns.isEmpty) {
+      return rating;
+    }
+
+    final double sum = _today!.checkIns.fold<double>(
+      rating,
+      (total, checkIn) => total + checkIn.rating,
+    );
+    return sum / (_today!.checkIns.length + 1);
+  }
+
+  List<MapEntry<String, String>> get quickAssessments {
+    if (_today == null || _today!.checkIns.isEmpty) {
+      return <MapEntry<String, String>>[];
+    }
+
+    final List<DayCheckIn> sorted = List<DayCheckIn>.from(_today!.checkIns)
+      ..sort((a, b) => b.at.compareTo(a.at));
+
+    return sorted.take(5).map((checkIn) {
+      return MapEntry(
+        _timeLabel(checkIn.at),
+        'Rated ${checkIn.rating.round()}/10',
+      );
+    }).toList();
+  }
+
+  List<MapEntry<String, String>> get recentNotes {
+    if (_today == null || _today!.notes.isEmpty) {
+      return <MapEntry<String, String>>[];
+    }
+
+    final List<DayNote> sorted = List<DayNote>.from(_today!.notes)
+      ..sort((a, b) => b.at.compareTo(a.at));
+
+    return sorted.take(4).map((note) {
+      final String text = note.text.length > 42
+          ? '${note.text.substring(0, 42)}...'
+          : note.text;
+      return MapEntry(
+        _timeLabel(note.at),
+        '$text • Feeling ${note.feeling}/5',
+      );
+    }).toList();
+  }
+
+  Future<void> addQuickEvent(DayDomain domain, int minutes) async {
+    if (_today == null || minutes <= 0 || isAddingEvent) {
+      return;
+    }
+
+    isAddingEvent = true;
+    notifyListeners();
+
+    try {
+      final DateTime endAt = DateTime.now();
+      final DateTime startAt = endAt.subtract(Duration(minutes: minutes));
+      final DayEvent event = DayEvent(
+        id: '${domain.name}-${endAt.microsecondsSinceEpoch}',
+        domain: domain,
+        startAt: startAt,
+        endAt: endAt,
+      );
+      final List<DayEvent> updatedEvents = List<DayEvent>.from(_today!.events)
+        ..add(event);
+      _today = _today!.copyWith(events: updatedEvents);
+      _upsertToday(_today!);
+      await _storage.saveRecords(_records);
+      lastEventMessage =
+          'Added ${_formatMinutes(minutes)} ${_domainLabel(domain)}';
+    } finally {
+      isAddingEvent = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> addMicroNote({
+    required String text,
+    required int feeling,
+  }) async {
+    final String trimmed = text.trim();
+    if (_today == null || trimmed.isEmpty || isAddingNote) {
+      return;
+    }
+
+    isAddingNote = true;
+    notifyListeners();
+
+    try {
+      final DayNote note = DayNote(
+        at: DateTime.now(),
+        text: trimmed,
+        feeling: feeling.clamp(1, 5),
+      );
+      final List<DayNote> updatedNotes = List<DayNote>.from(_today!.notes)
+        ..add(note);
+      _today = _today!.copyWith(notes: updatedNotes);
+      _upsertToday(_today!);
+      await _storage.saveRecords(_records);
+      lastNoteMessage = 'Note saved';
+    } finally {
+      isAddingNote = false;
+      notifyListeners();
+    }
   }
 
   List<String> get atAGlance {
@@ -195,27 +329,90 @@ class TodayViewModel extends ChangeNotifier {
         : lines;
   }
 
-  List<MapEntry<String, int>> get quickAddOptions {
-    return <MapEntry<String, int>>[
-      const MapEntry<String, int>('Add 30m Work', 30),
-      const MapEntry<String, int>('Add 20m Exercise', 20),
-      const MapEntry<String, int>('Add 45m Social', 45),
-      const MapEntry<String, int>('Add 30m Digital', 30),
+  List<SourceStatus> get sourceStatuses {
+    return const <SourceStatus>[
+      SourceStatus(
+        name: 'Apple Health',
+        state: 'Mock connected',
+        detail: 'Sleep, movement, resting heart rate',
+      ),
+      SourceStatus(
+        name: 'Calendar',
+        state: 'Mock connected',
+        detail: 'Work blocks and meetings',
+      ),
+      SourceStatus(
+        name: 'Screen Time',
+        state: 'Mock connected',
+        detail: 'Digital consumption',
+      ),
     ];
   }
 
-  Future<void> addQuickEventFromLabel(String label, int minutes) async {
-    final DayDomain domain;
-    if (label.contains('Work')) {
-      domain = DayDomain.work;
-    } else if (label.contains('Exercise')) {
-      domain = DayDomain.exercise;
-    } else if (label.contains('Social')) {
-      domain = DayDomain.social;
-    } else {
-      domain = DayDomain.digital;
+  String get historicalImportNote {
+    return 'Historical import policy pending (backlog): decide lookback window before live integrations.';
+  }
+
+  List<MapEntry<String, String>> get todayEvents {
+    if (_today == null) {
+      return <MapEntry<String, String>>[];
     }
-    await addQuickEvent(domain, minutes);
+
+    final List<DayEvent> sorted = List<DayEvent>.from(_today!.events)
+      ..sort((a, b) => b.endAt.compareTo(a.endAt));
+
+    return sorted.take(8).map((event) {
+      final String title = _domainLabel(event.domain);
+      final String detail =
+          '${_formatMinutes(event.durationMinutes)} • ${_timeLabel(event.endAt)}';
+      return MapEntry(title, detail);
+    }).toList();
+  }
+
+  List<QuickAddAction> get quickAddOptions {
+    return const <QuickAddAction>[
+      QuickAddAction(
+        label: 'Add 30m Work',
+        domain: DayDomain.work,
+        minutes: 30,
+      ),
+      QuickAddAction(
+        label: 'Add 20m Exercise',
+        domain: DayDomain.exercise,
+        minutes: 20,
+      ),
+      QuickAddAction(
+        label: 'Add 45m Social',
+        domain: DayDomain.social,
+        minutes: 45,
+      ),
+      QuickAddAction(
+        label: 'Add 30m Digital',
+        domain: DayDomain.digital,
+        minutes: 30,
+      ),
+    ];
+  }
+
+  List<DayDomain> get trackableDomains {
+    return const <DayDomain>[
+      DayDomain.sleep,
+      DayDomain.work,
+      DayDomain.exercise,
+      DayDomain.social,
+      DayDomain.meetings,
+      DayDomain.awayFromHome,
+      DayDomain.digital,
+      DayDomain.chores,
+      DayDomain.learning,
+      DayDomain.reflection,
+    ];
+  }
+
+  String domainLabel(DayDomain domain) => _domainLabel(domain);
+
+  Future<void> addQuickEventFromAction(QuickAddAction action) async {
+    await addQuickEvent(action.domain, action.minutes);
   }
 
   void _upsertToday(DayRecord today) {
@@ -266,6 +463,7 @@ class TodayViewModel extends ChangeNotifier {
           _seedEvent(DayDomain.social, 40),
           _seedEvent(DayDomain.digital, 70),
         ],
+        checkIns: const <DayCheckIn>[],
       ),
       DayRecord(
         dateKey: _dateKey(today.subtract(const Duration(days: 2))),
@@ -277,6 +475,7 @@ class TodayViewModel extends ChangeNotifier {
           _seedEvent(DayDomain.social, 20),
           _seedEvent(DayDomain.digital, 130),
         ],
+        checkIns: const <DayCheckIn>[],
       ),
       DayRecord(
         dateKey: _dateKey(today.subtract(const Duration(days: 1))),
@@ -288,11 +487,13 @@ class TodayViewModel extends ChangeNotifier {
           _seedEvent(DayDomain.social, 35),
           _seedEvent(DayDomain.digital, 90),
         ],
+        checkIns: const <DayCheckIn>[],
       ),
       DayRecord(
         dateKey: todayKey,
         rating: 7,
         events: _defaultTodayEvents(),
+        checkIns: const <DayCheckIn>[],
       ),
     ];
   }
@@ -336,6 +537,31 @@ class TodayViewModel extends ChangeNotifier {
     return '${hours}h ${remaining}m';
   }
 
+  String _domainLabel(DayDomain domain) {
+    switch (domain) {
+      case DayDomain.sleep:
+        return 'Sleep';
+      case DayDomain.work:
+        return 'Work';
+      case DayDomain.exercise:
+        return 'Exercise';
+      case DayDomain.social:
+        return 'Social';
+      case DayDomain.meetings:
+        return 'Meetings';
+      case DayDomain.awayFromHome:
+        return 'Away from home';
+      case DayDomain.digital:
+        return 'Digital';
+      case DayDomain.chores:
+        return 'Chores';
+      case DayDomain.learning:
+        return 'Learning';
+      case DayDomain.reflection:
+        return 'Reflection';
+    }
+  }
+
   String _dateKey(DateTime date) {
     final String month = date.month.toString().padLeft(2, '0');
     final String day = date.day.toString().padLeft(2, '0');
@@ -358,5 +584,14 @@ class TodayViewModel extends ChangeNotifier {
       'Dec',
     ];
     return '${months[date.month - 1]} ${date.day}';
+  }
+
+  String _timeLabel(DateTime dateTime) {
+    final int hour = dateTime.hour == 0
+        ? 12
+        : (dateTime.hour > 12 ? dateTime.hour - 12 : dateTime.hour);
+    final String minute = dateTime.minute.toString().padLeft(2, '0');
+    final String period = dateTime.hour >= 12 ? 'PM' : 'AM';
+    return '$hour:$minute $period';
   }
 }

@@ -4,8 +4,10 @@ import '../../design/components/pd_button.dart';
 import '../../design/components/pd_card.dart';
 import '../../design/layout/pd_screen.dart';
 import '../../design/tokens/colors.dart';
+import '../../design/tokens/radius.dart';
 import '../../design/tokens/spacing.dart';
 import '../../design/tokens/typography.dart';
+import 'models/day_models.dart';
 import 'today_view_model.dart';
 
 class TodayScreen extends StatefulWidget {
@@ -17,6 +19,10 @@ class TodayScreen extends StatefulWidget {
 
 class _TodayScreenState extends State<TodayScreen> {
   TodayViewModel? _viewModel;
+  DayDomain _selectedDomain = DayDomain.work;
+  double _customDurationMinutes = 30;
+  final TextEditingController _noteController = TextEditingController();
+  double _noteFeeling = 3;
 
   @override
   void initState() {
@@ -37,6 +43,7 @@ class _TodayScreenState extends State<TodayScreen> {
 
   @override
   void dispose() {
+    _noteController.dispose();
     _viewModel?.dispose();
     super.dispose();
   }
@@ -69,7 +76,9 @@ class _TodayScreenState extends State<TodayScreen> {
                         const SizedBox(height: PdSpacing.xs),
                         Text(_formattedDate(), style: PdTypography.bodySmall),
                         const SizedBox(height: PdSpacing.lg),
-                        _buildQuickAddCard(model),
+                        _buildSourcesHintCard(),
+                        const SizedBox(height: PdSpacing.md),
+                        _buildTodayEventsCard(model),
                         const SizedBox(height: PdSpacing.md),
                         _buildAtAGlanceCard(model),
                         const SizedBox(height: PdSpacing.md),
@@ -78,6 +87,10 @@ class _TodayScreenState extends State<TodayScreen> {
                         _buildNotablesCard(model),
                         const SizedBox(height: PdSpacing.md),
                         _buildRatingCard(model),
+                        const SizedBox(height: PdSpacing.md),
+                        _buildMicroNotesCard(model),
+                        const SizedBox(height: PdSpacing.md),
+                        _buildQuickAddCard(model),
                         const SizedBox(height: PdSpacing.md),
                         _buildRecentDaysCard(model),
                         const SizedBox(height: PdSpacing.md),
@@ -97,10 +110,10 @@ class _TodayScreenState extends State<TodayScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Quick add event', style: PdTypography.title),
+          Text('Manual add (temporary)', style: PdTypography.title),
           const SizedBox(height: PdSpacing.xs),
           Text(
-            'Capture meaningful chunks from your day.',
+            'Auto-collected data is the primary path. Use this only to patch gaps.',
             style: PdTypography.bodySmall,
           ),
           const SizedBox(height: PdSpacing.sm),
@@ -108,15 +121,128 @@ class _TodayScreenState extends State<TodayScreen> {
             return Padding(
               padding: const EdgeInsets.only(bottom: PdSpacing.xs),
               child: PdButton(
-                label: option.key,
+                label: option.label,
                 variant: PdButtonVariant.secondary,
-                onPressed: () => model.addQuickEventFromLabel(
-                  option.key,
-                  option.value,
-                ),
+                onPressed: model.isAddingEvent
+                    ? null
+                    : () => model.addQuickEventFromAction(option),
               ),
             );
           }),
+          const SizedBox(height: PdSpacing.xs),
+          Text('Custom event', style: PdTypography.label),
+          const SizedBox(height: PdSpacing.xs),
+          InputDecorator(
+            decoration: InputDecoration(
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: PdSpacing.sm,
+                vertical: PdSpacing.xs,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(PdRadius.sm),
+                borderSide: const BorderSide(color: PdColors.border),
+              ),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<DayDomain>(
+                value: _selectedDomain,
+                isExpanded: true,
+                items: model.trackableDomains.map((domain) {
+                  return DropdownMenuItem<DayDomain>(
+                    value: domain,
+                    child: Text(
+                      model.domainLabel(domain),
+                      style: PdTypography.body,
+                    ),
+                  );
+                }).toList(),
+                onChanged: model.isAddingEvent
+                    ? null
+                    : (value) {
+                        if (value == null) {
+                          return;
+                        }
+                        setState(() {
+                          _selectedDomain = value;
+                        });
+                      },
+              ),
+            ),
+          ),
+          const SizedBox(height: PdSpacing.xs),
+          Text(
+            'Duration: ${_customDurationMinutes.round()}m',
+            style: PdTypography.bodySmall,
+          ),
+          SliderTheme(
+            data: SliderThemeData(
+              activeTrackColor: PdColors.brand,
+              inactiveTrackColor: PdColors.surfaceAlt,
+              thumbColor: PdColors.brand,
+            ),
+            child: Slider(
+              min: 10,
+              max: 180,
+              divisions: 34,
+              value: _customDurationMinutes,
+              onChanged: model.isAddingEvent
+                  ? null
+                  : (value) {
+                      setState(() {
+                        _customDurationMinutes = value;
+                      });
+                    },
+            ),
+          ),
+          PdButton(
+            label: 'Add custom event',
+            variant: PdButtonVariant.secondary,
+            isLoading: model.isAddingEvent,
+            onPressed: model.isAddingEvent
+                ? null
+                : () => model.addQuickEvent(
+                      _selectedDomain,
+                      _customDurationMinutes.round(),
+                    ),
+          ),
+          if (model.lastEventMessage != null) ...[
+            const SizedBox(height: PdSpacing.xs),
+            Text(model.lastEventMessage!, style: PdTypography.bodySmall),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSourcesHintCard() {
+    return PdCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Sources', style: PdTypography.title),
+          const SizedBox(height: PdSpacing.xs),
+          Text(
+            'Source connections are managed in Settings.',
+            style: PdTypography.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTodayEventsCard(TodayViewModel model) {
+    return PdCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Today\'s events', style: PdTypography.title),
+          const SizedBox(height: PdSpacing.sm),
+          ...model.todayEvents.map(
+            (entry) => Padding(
+              padding: const EdgeInsets.only(bottom: PdSpacing.xs),
+              child: _buildTimeRow(entry.key, entry.value),
+            ),
+          ),
         ],
       ),
     );
@@ -214,9 +340,112 @@ class _TodayScreenState extends State<TodayScreen> {
             isLoading: model.isSaving,
             isSaved: model.isSaved,
           ),
+          const SizedBox(height: PdSpacing.xs),
+          PdButton(
+            label: 'Quick assessment',
+            variant: PdButtonVariant.secondary,
+            onPressed: model.addQuickAssessment,
+          ),
+          const SizedBox(height: PdSpacing.xs),
+          Text(
+            'Today pulse: ${model.pulseScore.toStringAsFixed(1)}/10',
+            style: PdTypography.bodySmall,
+          ),
+          ...model.quickAssessments.map(
+            (entry) => Padding(
+              padding: const EdgeInsets.only(top: PdSpacing.xs),
+              child: _buildTimeRow(entry.key, entry.value),
+            ),
+          ),
           if (model.isSaved) ...[
             const SizedBox(height: PdSpacing.xs),
             Text('Saved', style: PdTypography.bodySmall),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMicroNotesCard(TodayViewModel model) {
+    return PdCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Micro-notes', style: PdTypography.title),
+          const SizedBox(height: PdSpacing.xs),
+          Text(
+            'What is happening now, and how does it feel?',
+            style: PdTypography.bodySmall,
+          ),
+          const SizedBox(height: PdSpacing.sm),
+          TextField(
+            controller: _noteController,
+            maxLines: 2,
+            decoration: InputDecoration(
+              hintText: 'Short note...',
+              hintStyle: PdTypography.bodySmall,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(PdRadius.sm),
+                borderSide: const BorderSide(color: PdColors.border),
+              ),
+            ),
+            style: PdTypography.body,
+          ),
+          const SizedBox(height: PdSpacing.xs),
+          Text(
+            'Feeling: ${_noteFeeling.round()}/5',
+            style: PdTypography.bodySmall,
+          ),
+          SliderTheme(
+            data: SliderThemeData(
+              activeTrackColor: PdColors.brand,
+              inactiveTrackColor: PdColors.surfaceAlt,
+              thumbColor: PdColors.brand,
+            ),
+            child: Slider(
+              min: 1,
+              max: 5,
+              divisions: 4,
+              value: _noteFeeling,
+              onChanged: model.isAddingNote
+                  ? null
+                  : (value) {
+                      setState(() {
+                        _noteFeeling = value;
+                      });
+                    },
+            ),
+          ),
+          PdButton(
+            label: 'Save note',
+            variant: PdButtonVariant.secondary,
+            isLoading: model.isAddingNote,
+            onPressed: model.isAddingNote
+                ? null
+                : () async {
+                    final String raw = _noteController.text.trim();
+                    if (raw.isEmpty) {
+                      return;
+                    }
+                    await model.addMicroNote(
+                      text: raw,
+                      feeling: _noteFeeling.round(),
+                    );
+                    _noteController.clear();
+                  },
+          ),
+          if (model.lastNoteMessage != null) ...[
+            const SizedBox(height: PdSpacing.xs),
+            Text(model.lastNoteMessage!, style: PdTypography.bodySmall),
+          ],
+          if (model.recentNotes.isNotEmpty) ...[
+            const SizedBox(height: PdSpacing.sm),
+            ...model.recentNotes.map(
+              (entry) => Padding(
+                padding: const EdgeInsets.only(bottom: PdSpacing.xs),
+                child: _buildTimeRow(entry.key, entry.value),
+              ),
+            ),
           ],
         ],
       ),
@@ -262,9 +491,26 @@ class _TodayScreenState extends State<TodayScreen> {
   Widget _buildTimeRow(String label, String value) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: PdTypography.body),
-        Text(value, style: PdTypography.label),
+        Expanded(
+          child: Text(
+            label,
+            style: PdTypography.body,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 2,
+          ),
+        ),
+        const SizedBox(width: PdSpacing.sm),
+        Flexible(
+          child: Text(
+            value,
+            style: PdTypography.label,
+            textAlign: TextAlign.right,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 2,
+          ),
+        ),
       ],
     );
   }
