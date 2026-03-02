@@ -1,9 +1,10 @@
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../sources/mock_source_adapters.dart';
 import '../sources/source_adapter.dart';
 import '../sources/source_importer.dart';
+import '../sources/source_registry.dart';
+import '../sources/sync_status_store.dart';
 import '../today/data/today_storage.dart';
 
 class SourceToggle {
@@ -36,7 +37,7 @@ enum ImportLookback {
 }
 
 class SettingsViewModel extends ChangeNotifier {
-  SettingsViewModel._(this._prefs, this._importer);
+  SettingsViewModel._(this._prefs, this._importer, this._statusStore);
 
   static const String healthKey = 'source_health_enabled_v1';
   static const String calendarKey = 'source_calendar_enabled_v1';
@@ -46,27 +47,31 @@ class SettingsViewModel extends ChangeNotifier {
 
   final SharedPreferences _prefs;
   final SourceImporter _importer;
+  final SyncStatusStore _statusStore;
 
   List<SourceToggle> connectedSources = const <SourceToggle>[];
+  final Map<SourceType, SourceConnectionState> sourceStates =
+      <SourceType, SourceConnectionState>{};
   ImportLookback lookback = ImportLookback.days30;
   bool autoSyncOnOpen = false;
   bool isSyncing = false;
+  bool isRequestingHealthAccess = false;
   String? syncMessage;
+  DateTime? lastSyncAt;
 
   static Future<SettingsViewModel> create() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     final TodayStorage storage = await TodayStorage.create();
+    final SyncStatusStore statusStore = await SyncStatusStore.create();
     final SourceImporter importer = SourceImporter(
       storage: storage,
-      adapters: <SourceAdapter>[
-        MockHealthSourceAdapter(),
-        MockCalendarSourceAdapter(),
-        MockScreenTimeSourceAdapter(),
-      ],
+      adapters: buildSourceAdapters(),
     );
 
-    final SettingsViewModel model = SettingsViewModel._(prefs, importer);
+    final SettingsViewModel model =
+        SettingsViewModel._(prefs, importer, statusStore);
     model._load();
+    await model.refreshSourceStates();
     return model;
   }
 
@@ -104,6 +109,11 @@ class SettingsViewModel extends ChangeNotifier {
     }
 
     autoSyncOnOpen = _prefs.getBool(autoSyncOnOpenKey) ?? false;
+    final int? lastSyncMs = _statusStore.lastSyncAtMs;
+    if (lastSyncMs != null) {
+      lastSyncAt = DateTime.fromMillisecondsSinceEpoch(lastSyncMs);
+    }
+    syncMessage = _statusStore.lastSyncSummary;
 
     notifyListeners();
   }
@@ -133,6 +143,19 @@ class SettingsViewModel extends ChangeNotifier {
 
   String get importPolicySummary {
     return 'Import window: ${lookbackLabel(lookback)}';
+  }
+
+  String get lastSyncLabel {
+    if (lastSyncAt == null) {
+      return 'No sync yet';
+    }
+    final DateTime value = lastSyncAt!;
+    final int hour = value.hour == 0
+        ? 12
+        : (value.hour > 12 ? value.hour - 12 : value.hour);
+    final String minute = value.minute.toString().padLeft(2, '0');
+    final String period = value.hour >= 12 ? 'PM' : 'AM';
+    return 'Last sync: ${value.month}/${value.day} $hour:$minute $period';
   }
 
   String lookbackLabel(ImportLookback value) {
@@ -202,14 +225,67 @@ class SettingsViewModel extends ChangeNotifier {
         enabledSources: _enabledSourceTypes(),
       );
 
-      syncMessage =
-          'Synced ${summary.importedEventCount} events across ${summary.touchedDayCount} day(s).';
+      await _statusStore.write(summary);
+      lastSyncAt = summary.completedAt;
+      syncMessage = _statusStore.lastSyncSummary;
     } catch (_) {
       syncMessage = 'Sync failed. Please try again.';
+      await _statusStore.writeFailure(syncMessage!);
     } finally {
       isSyncing = false;
       notifyListeners();
     }
+  }
+
+  Future<void> refreshSourceStates() async {
+    sourceStates.clear();
+    for (final SourceAdapter adapter in _importer.adapters) {
+      final SourceConnectionState state = await adapter.connectionState();
+      sourceStates[adapter.source] = state;
+    }
+    notifyListeners();
+  }
+
+  Future<void> requestHealthAccess() async {
+    if (isRequestingHealthAccess) {
+      return;
+    }
+
+    isRequestingHealthAccess = true;
+    notifyListeners();
+
+    try {
+      bool granted = false;
+      for (final SourceAdapter adapter in _importer.adapters) {
+        if (adapter.source != SourceType.health) {
+          continue;
+        }
+        if (adapter is AuthorizationSourceAdapter) {
+          final AuthorizationSourceAdapter authAdapter =
+              adapter as AuthorizationSourceAdapter;
+          granted = await authAdapter.requestAuthorization();
+        }
+      }
+      syncMessage = granted
+          ? 'Health access granted.'
+          : 'Health access not granted.';
+      await refreshSourceStates();
+    } finally {
+      isRequestingHealthAccess = false;
+      notifyListeners();
+    }
+  }
+
+  String sourceStateLabel(String key) {
+    final SourceType? type = _sourceTypeFromKey(key);
+    if (type == null) {
+      return 'Unknown';
+    }
+    final SourceConnectionState? state = sourceStates[type];
+    if (state == null) {
+      return 'Checking...';
+    }
+    return state.connected ? 'Connected' : 'Not connected';
   }
 
   Set<SourceType> _enabledSourceTypes() {
@@ -227,6 +303,19 @@ class SettingsViewModel extends ChangeNotifier {
       }
     }
     return result;
+  }
+
+  SourceType? _sourceTypeFromKey(String key) {
+    if (key == healthKey) {
+      return SourceType.health;
+    }
+    if (key == calendarKey) {
+      return SourceType.calendar;
+    }
+    if (key == screenTimeKey) {
+      return SourceType.screenTime;
+    }
+    return null;
   }
 
   static int lookbackDaysFromStored(String? stored) {

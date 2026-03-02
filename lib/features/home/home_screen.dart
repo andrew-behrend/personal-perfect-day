@@ -7,6 +7,7 @@ import '../../design/tokens/colors.dart';
 import '../../design/tokens/radius.dart';
 import '../../design/tokens/spacing.dart';
 import '../../design/tokens/typography.dart';
+import '../sources/sync_status_store.dart';
 import '../today/today_view_model.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -18,6 +19,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   TodayViewModel? _viewModel;
+  String? _lastSyncSummary;
+  String _lastSyncLabel = 'Last sync: not yet run';
   double _quickRating = 7;
   final TextEditingController _noteController = TextEditingController();
   double _noteFeeling = 3;
@@ -30,6 +33,20 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _load() async {
     final TodayViewModel model = await TodayViewModel.create();
+    final SyncStatusStore statusStore = await SyncStatusStore.create();
+    final int? lastSyncMs = statusStore.lastSyncAtMs;
+    final String syncLabel;
+    if (lastSyncMs == null) {
+      syncLabel = 'Last sync: not yet run';
+    } else {
+      final DateTime value = DateTime.fromMillisecondsSinceEpoch(lastSyncMs);
+      final int hour = value.hour == 0
+          ? 12
+          : (value.hour > 12 ? value.hour - 12 : value.hour);
+      final String minute = value.minute.toString().padLeft(2, '0');
+      final String period = value.hour >= 12 ? 'PM' : 'AM';
+      syncLabel = 'Last sync: ${value.month}/${value.day} $hour:$minute $period';
+    }
     if (!mounted) {
       model.dispose();
       return;
@@ -37,6 +54,8 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _viewModel = model;
       _quickRating = model.rating;
+      _lastSyncSummary = statusStore.lastSyncSummary;
+      _lastSyncLabel = syncLabel;
     });
   }
 
@@ -77,6 +96,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         _buildMicroNoteCard(model),
                         const SizedBox(height: PdSpacing.md),
                         _buildPulseSnapshotCard(model),
+                        const SizedBox(height: PdSpacing.md),
+                        _buildSyncStatusCard(),
                         const SizedBox(height: PdSpacing.xl),
                       ],
                     ),
@@ -229,6 +250,23 @@ class _HomeScreenState extends State<HomeScreen> {
             '${model.recentNotes.length} recent micro-notes',
             style: PdTypography.bodySmall,
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSyncStatusCard() {
+    return PdCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Sync status', style: PdTypography.title),
+          const SizedBox(height: PdSpacing.xs),
+          Text(_lastSyncLabel, style: PdTypography.bodySmall),
+          if (_lastSyncSummary != null) ...[
+            const SizedBox(height: PdSpacing.xs),
+            Text(_lastSyncSummary!, style: PdTypography.bodySmall),
+          ],
         ],
       ),
     );

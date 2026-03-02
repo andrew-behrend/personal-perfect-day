@@ -38,3 +38,7 @@ abstract class SourceAdapter {
     required DateTime to,
   });
 }
+
+abstract class AuthorizationSourceAdapter {
+  Future<bool> requestAuthorization();
+}

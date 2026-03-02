@@ -8,9 +8,10 @@ import '../features/history/history_screen.dart';
 import '../features/onboarding/consent_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/settings/settings_view_model.dart';
-import '../features/sources/mock_source_adapters.dart';
 import '../features/sources/source_adapter.dart';
 import '../features/sources/source_importer.dart';
+import '../features/sources/source_registry.dart';
+import '../features/sources/sync_status_store.dart';
 import '../features/today/today_screen.dart';
 import '../features/today/data/today_storage.dart';
 import '../features/trends/trends_screen.dart';
@@ -95,24 +96,26 @@ class _AppRootState extends State<AppRoot> {
     }
 
     final TodayStorage storage = await TodayStorage.create();
+    final SyncStatusStore statusStore = await SyncStatusStore.create();
     final SourceImporter importer = SourceImporter(
       storage: storage,
-      adapters: <SourceAdapter>[
-        MockHealthSourceAdapter(),
-        MockCalendarSourceAdapter(),
-        MockScreenTimeSourceAdapter(),
-      ],
+      adapters: buildSourceAdapters(),
     );
 
     final String? storedLookback = prefs.getString(SettingsViewModel.lookbackKey);
     final int lookbackDays = SettingsViewModel.lookbackDaysFromStored(storedLookback);
     final DateTime to = DateTime.now();
     final DateTime from = to.subtract(Duration(days: lookbackDays));
-    await importer.importForRange(
-      from: from,
-      to: to,
-      enabledSources: sourceTypes,
-    );
+    try {
+      final SourceImportSummary summary = await importer.importForRange(
+        from: from,
+        to: to,
+        enabledSources: sourceTypes,
+      );
+      await statusStore.write(summary);
+    } catch (_) {
+      await statusStore.writeFailure('Auto-sync failed on app open.');
+    }
   }
 
   @override
